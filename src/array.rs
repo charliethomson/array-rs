@@ -21,9 +21,17 @@ impl<T> Array<T> {
 
     /// copy self.cap items from src to self.ptr    
     unsafe fn copy_from(&self, src: NonNull<T>) {
-        use std::ptr::copy_nonoverlapping;
+        use std::ptr::copy;
 
-        copy_nonoverlapping(self.as_ptr(), src.as_ptr(), self.cap);
+        copy(self.as_ptr(), src.as_ptr(), self.cap);
+    }
+
+    fn in_bounds(&self, idx: usize) -> Option<Error> {
+        if idx > self.cap {
+            return Some(Error::new(ErrorKind::Other, "index out of range"));
+        }
+
+        None
     }
 }
 
@@ -71,8 +79,8 @@ impl<T> Array<T> {
     /// Error states:
     ///  * `idx` is greater than the length of the array
     pub fn get(&self, idx: usize) -> IOResult<T> {
-        if idx > self.cap {
-            return Err(Error::new(ErrorKind::Other, "index out of range"));
+        if let Some(err) = self.in_bounds(idx) {
+            return Err(err);
         } else {
             unsafe {
                 // This is safe because of (^)
@@ -86,14 +94,14 @@ impl<T> Array<T> {
     /// Error states:
     ///  * `idx` is greater than the length of the array
     pub fn set(&self, idx: usize, val: T) -> IOResult<()> {
-        if idx > self.cap {
-            return Err(Error::new(ErrorKind::Other, "index out of range"));
+        if let Some(err) = self.in_bounds(idx) {
+            return Err(err);
         } else {
             unsafe {
                 write(self.as_ptr().add(idx), val);
             }
         }
-        Ok(())        
+        Ok(())
     }
 
     /// Delete and return the value at `idx`
@@ -101,8 +109,8 @@ impl<T> Array<T> {
     /// Error states:
     ///  * `idx` is greater than the length of the array
     pub fn pop(&self, idx: usize) -> IOResult<T> {
-        if idx > self.cap {
-            return Err(Error::new(ErrorKind::Other, "index out of range"));
+        if let Some(err) = self.in_bounds(idx) {
+            return Err(err);
         } else {
             unsafe {
                 let addr = self.as_ptr().add(idx);

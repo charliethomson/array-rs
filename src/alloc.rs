@@ -18,11 +18,13 @@ use std::{
 /// 
 /// Returns a non-null pointer to the beginning of the Array
 pub fn alloc<T>(len: usize) -> IOResult<NonNull<T>> {
+    // Get the size of the allocation
     let size = match size_of::<T>().checked_mul(len) {
         Some(0) => return Err(Error::new(ErrorKind::Other, "Cannot allocate zero sized value")),
         Some(n) => n,
         None => return Err(Error::new(ErrorKind::Other, "Overflow when getting layout size")),
     };
+    // Get the align of T
     let align = align_of::<T>();
     let layout = match Layout::from_size_align(size, align) {
         Ok(n) => n,
@@ -32,6 +34,8 @@ pub fn alloc<T>(len: usize) -> IOResult<NonNull<T>> {
     // allocate zero sized values
     unsafe {
         let ptr = alloc_zeroed(layout) as *mut T;
+        // Create a NonNull<T> from a *mut T
+        // Will fail if the *mut T is null somehow
         if let Some(p) = NonNull::new(ptr) {
             return Ok(p);
         } else {
