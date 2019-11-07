@@ -1,9 +1,56 @@
-use std::{
-    fmt::{ Debug, Display, Formatter, Result as FmtResult },
-    io::{ Error, ErrorKind, Result as IOResult },
-    cmp::Ordering,
-    ptr::{ NonNull, write, read },
+
+use {
+    crate::{
+        error::ArrayError,
+    },
+    std::{
+        fmt::{
+            Debug, Display,
+            Formatter, Result as FmtResult
+        },
+        cmp::Ordering,
+        ptr::{ NonNull, write, read },
+        alloc::{
+            alloc_zeroed, Layout
+        },
+        mem::{size_of, align_of},
+    },
 };
+
+
+/// Allocate space for an array [T; `len`]
+///
+/// Error states: 
+/// * if `len` is 0
+/// * `len * size_of::<T>()` overflows
+/// 
+/// Returns a non-null pointer to the beginning of the Array
+pub fn alloc<T>(len: usize) -> Result<NonNull<T>, ArrayError> {
+    // Get the size of the allocation
+    let size = match size_of::<T>().checked_mul(len) {
+        Some(0) => return Err(ArrayError::new("Cannot allocate zero sized value")),
+        Some(n) => n,
+        None => return Err(ArrayError::new("Overflow when getting layout size")),
+    };
+    // Get the align of T
+    let align = align_of::<T>();
+    let layout = match Layout::from_size_align(size, align) {
+        Ok(n) => n,
+        Err(_) => return Err(ArrayError::new(format!("Failed to create layout from (size: {}, align: {})", size, align)))
+    };
+    // alloc_zeroed's behaviour is only undefined when trying to
+    // allocate zero sized values
+    unsafe {
+        let ptr = alloc_zeroed(layout) as *mut T;
+        // Create a NonNull<T> from a *mut T
+        // Will fail if the *mut T is null somehow
+        if let Some(p) = NonNull::new(ptr) {
+            return Ok(p);
+        } else {
+            return Err(ArrayError::new("Failed to allocate memory for the Array"));
+        }
+    }
+}
 
 /// Safe, generic implementation of an Array
 pub struct Array<T> {
@@ -14,8 +61,7 @@ pub struct Array<T> {
 // Private Methods
 impl<T> Array<T> {
 
-    fn allocate(size: usize) -> IOResult<NonNull<T>> {
-        use crate::alloc::alloc;
+    fn allocate(size: usize) -> Result<NonNull<T>, ArrayError> {
         alloc::<T>(size)
     }
 
@@ -23,12 +69,12 @@ impl<T> Array<T> {
     unsafe fn copy_from(&self, src: NonNull<T>) {
         use std::ptr::copy;
 
-        copy(self.as_ptr(), src.as_ptr(), self.cap);
+        copy(src.as_ptr(), self.as_ptr(), self.cap);
     }
 
-    fn in_bounds(&self, idx: usize) -> Option<Error> {
+    fn in_bounds(&self, idx: usize) -> Option<ArrayError> {
         if idx > self.cap {
-            return Some(Error::new(ErrorKind::Other, "index out of range"));
+            return Some(ArrayError::new("index out of range"));
         }
 
         None
@@ -42,7 +88,7 @@ impl<T> Array<T> {
     /// 
     /// Error states:
     ///  * see [`::alloc::alloc`]: ../alloc/fn.alloc.html
-    pub fn new(size: usize) -> IOResult<Self> {
+    pub fn new(size: usize) -> Result<Self, ArrayError> {
         Ok(Array {
             ptr: Self::allocate(size)?,
             cap: size,
@@ -58,14 +104,14 @@ impl<T> Array<T> {
     /// 
     /// # Safety
     /// This is unsafe because it relies on the user to give the correct pointer and length
-    pub unsafe fn from_raw(ptr: NonNull<T>, len: usize) -> IOResult<Self> {
+    pub unsafe fn from_raw(ptr: NonNull<T>, len: usize) -> Result<Self, ArrayError> {
         let arr = Array::new(len)?;
         arr.copy_from(ptr);
         Ok(arr)
     }
 
     /// Fills `self` with `with`
-    pub fn fill(&self, with: T) where T: Copy {
+    pub fn fill(&mut self, with: T) where T: Copy {
         for offs in 0..self.cap {
             unsafe {
                 // This write should always be safe ( ptr + offs should never leave the allocated space )
@@ -78,7 +124,7 @@ impl<T> Array<T> {
     /// 
     /// Error states:
     ///  * `idx` is greater than the length of the array
-    pub fn get(&self, idx: usize) -> IOResult<T> {
+    pub fn get(&self, idx: usize) -> Result<T, ArrayError> {
         if let Some(err) = self.in_bounds(idx) {
             return Err(err);
         } else {
@@ -93,7 +139,7 @@ impl<T> Array<T> {
     /// 
     /// Error states:
     ///  * `idx` is greater than the length of the array
-    pub fn set(&self, idx: usize, val: T) -> IOResult<()> {
+    pub fn set(&mut self, idx: usize, val: T) -> Result<(), ArrayError> {
         if let Some(err) = self.in_bounds(idx) {
             return Err(err);
         } else {
@@ -108,7 +154,7 @@ impl<T> Array<T> {
     /// 
     /// Error states:
     ///  * `idx` is greater than the length of the array
-    pub fn pop(&self, idx: usize) -> IOResult<T> {
+    pub fn pop(&mut self, idx: usize) -> Result<T, ArrayError> {
         if let Some(err) = self.in_bounds(idx) {
             return Err(err);
         } else {
@@ -130,10 +176,9 @@ impl<T> Array<T> {
 
     /// Return the amount of times `val` appears in the `Array`
     pub fn count(&self, val: T) -> usize
-    where T: Clone + PartialEq
+    where T: Clone + PartialEq + Display
     {
-        let v: Vec<T> = self.clone().into_iter().filter(|v| v == &val).collect();
-        v.len() 
+        self.clone().into_iter().filter(|v| v == &val).collect::<Vec<T>>().len() 
     }
 
     pub fn cap(&self) -> usize { self.cap }
@@ -141,12 +186,11 @@ impl<T> Array<T> {
 
 // Trait implemetations
 
-// impl<T: Display> Display for Array<T> {
-//     fn fmt(&self, f: &mut Formatter) -> FmtResult {
-//         write!(f,)
-//     }
-// }
-
+impl<T: Debug + Copy> Debug for Array<T> {
+    fn fmt(&self, f: &mut Formatter) -> FmtResult {
+        write!(f, "{:?}", &self.clone().into_iter().collect::<Vec<T>>()[..])
+    }
+}
 
 impl<T: PartialEq + Clone> PartialEq for Array<T> {
     fn eq(&self, other: &Self) -> bool {
@@ -181,9 +225,7 @@ impl<T: Clone> Clone for Array<T> {
             // Get the array
             Ok(a) => a,
             Err(e) => {
-                if let Some(msg) = e.into_inner() { panic!("Encountered an error when cloning -> {}", msg); }
-                // V This V means that there was no message given, pls investigate
-                else { panic!("Unknown error encountered! Code: 00"); }
+                panic!("Encountered an error when cloning -> {}", e.msg())
             }
         };
         unsafe {
@@ -211,7 +253,7 @@ pub struct ArrayIter<T> {
     idx: usize
 } impl<T> ArrayIter<T> {
     /// Create a new `ArrayIter<T>` (consumes `arr`)
-    fn new(arr: Array<T>) -> Self {
+    fn new(arr: Array<T>) -> Self  {
         ArrayIter { arr, idx: 0 }
     }
 } impl<T> Iterator for ArrayIter<T> {
